@@ -26,7 +26,20 @@ async function run() {
 
     const foodsCollection = db.collection("foods");
     const ordersCollection = db.collection("orders");
-    
+
+    // 📜 Get All Foods
+    app.get("/foods", async (req, res) => {
+      const result = await foodsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // 🔍 Get Single Food
+    app.get("/foods/:id", async (req, res) => {
+      const id = req.params.id;
+      const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
+      res.send(food);
+    });
+
     // 🥘 Add New Food
     app.post("/foods", async (req, res) => {
       const food = req.body;
@@ -34,6 +47,16 @@ async function run() {
       res.send(result);
     });
 
+     // 📝 Update Food 
+    app.patch("/foods/:id", async (req, res) => {
+      const id = req.params.id;
+      const updates = req.body;
+      const result = await foodsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updates }
+      );
+      res.send(result);
+    });
     console.log("Connected to restaurantDB and APIs are ready!");
   } catch (err) {
     console.error(err);
