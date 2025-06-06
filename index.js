@@ -26,8 +26,13 @@ async function run() {
 
     const foodsCollection = db.collection("foods");
     const ordersCollection = db.collection("orders");
-
     
+    // 🥘 Add New Food
+    app.post("/foods", async (req, res) => {
+      const food = req.body;
+      const result = await foodsCollection.insertOne(food);
+      res.send(result);
+    });
 
     console.log("Connected to restaurantDB and APIs are ready!");
   } catch (err) {
