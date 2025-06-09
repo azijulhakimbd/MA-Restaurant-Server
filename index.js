@@ -1,7 +1,7 @@
 const express = require("express");
 const app = express();
 require("dotenv").config();
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const port = process.env.PORT || 3000;
 const cors = require("cors");
 
@@ -33,10 +33,26 @@ async function run() {
       res.send(result);
     });
 
+    // filtered by logged-in user
+    app.get("/foods", async (req, res) => {
+      const email = req.query.email;
+      if (!email) {
+        return res.status(400).send({ message: "Email query is required" });
+      }
+
+      const result = await foodsCollection.find({ userEmail: email }).toArray();
+      res.send(result);
+    });
+
     // 🔍 Get Single Food
     app.get("/foods/:id", async (req, res) => {
       const id = req.params.id;
       const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
+
+      if (!food) {
+        return res.status(404).send({ message: "Food not found" });
+      }
+
       res.send(food);
     });
 
@@ -47,7 +63,7 @@ async function run() {
       res.send(result);
     });
 
-     // 📝 Update Food 
+    // 📝 Update Food
     app.patch("/foods/:id", async (req, res) => {
       const id = req.params.id;
       const updates = req.body;
@@ -55,6 +71,15 @@ async function run() {
         { _id: new ObjectId(id) },
         { $set: updates }
       );
+      res.send(result);
+    });
+
+    // ❌ Delete Order
+    app.delete("orders/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await ordersCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
       res.send(result);
     });
     console.log("Connected to restaurantDB and APIs are ready!");
