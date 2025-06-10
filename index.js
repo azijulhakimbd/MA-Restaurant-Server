@@ -27,33 +27,56 @@ async function run() {
     const foodsCollection = db.collection("foods");
     const ordersCollection = db.collection("orders");
 
-    // 📜 Get All Foods
-    app.get("/foods", async (req, res) => {
-      const result = await foodsCollection.find().toArray();
-      res.send(result);
-    });
-
-    // filtered by logged-in user
     app.get("/foods", async (req, res) => {
       const email = req.query.email;
-      if (!email) {
-        return res.status(400).send({ message: "Email query is required" });
+      let query = {};
+      if (email) {
+        query.addedByEmail = email;
       }
-
-      const result = await foodsCollection.find({ userEmail: email }).toArray();
+      const result = await foodsCollection.find(query).toArray();
       res.send(result);
     });
 
-    // 🔍 Get Single Food
-    app.get("/foods/:id", async (req, res) => {
+    app.patch("/foods/:id", async (req, res) => {
       const id = req.params.id;
-      const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
+      const updates = req.body;
+      const userEmail = req.body.addedByEmail;
 
+      const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
       if (!food) {
         return res.status(404).send({ message: "Food not found" });
       }
 
-      res.send(food);
+      if (food.addedByEmail !== userEmail) {
+        return res
+          .status(403)
+          .send({ message: "You are not authorized to update this food" });
+      }
+
+      const result = await foodsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updates }
+      );
+      res.send(result);
+    });
+
+    app.delete("/foods/:id", async (req, res) => {
+      const id = req.params.id;
+      const userEmail = req.body.addedByEmail;
+
+      const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
+      if (!food) {
+        return res.status(404).send({ message: "Food not found" });
+      }
+
+      if (food.addedByEmail !== userEmail) {
+        return res
+          .status(403)
+          .send({ message: "You are not authorized to delete this food" });
+      }
+
+      const result = await foodsCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
     });
 
     // 🥘 Add New Food
@@ -63,25 +86,6 @@ async function run() {
       res.send(result);
     });
 
-    // 📝 Update Food
-    app.patch("/foods/:id", async (req, res) => {
-      const id = req.params.id;
-      const updates = req.body;
-      const result = await foodsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updates }
-      );
-      res.send(result);
-    });
-
-    // ❌ Delete Order
-    app.delete("orders/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await ordersCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-      res.send(result);
-    });
     console.log("Connected to restaurantDB and APIs are ready!");
   } catch (err) {
     console.error(err);
