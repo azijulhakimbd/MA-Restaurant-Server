@@ -34,7 +34,7 @@ async function run() {
       if (email) {
         query.addedByEmail = email;
       }
-      const cursor = jobsCollection.find(query);
+      const cursor = foodsCollection.find(query);
       const result = await cursor.toArray();
       res.send(result);
     });
