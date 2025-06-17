@@ -5,12 +5,9 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
 const admin = require("firebase-admin");
 
-
 // Middleware
 app.use(cors());
 app.use(express.json());
-
-
 
 // Firebase Admin SDK Initialization
 const serviceAccount = require("./restaurant-firebase-adminsdk.json");
@@ -122,7 +119,9 @@ async function run() {
       if (email !== req.decoded.email) {
         return res.status(403).send({ message: "Forbidden access" });
       }
-      const result = await ordersCollection.find({ buyerEmail: email }).toArray();
+      const result = await ordersCollection
+        .find({ buyerEmail: email })
+        .toArray();
       res.send(result);
     });
 
@@ -130,14 +129,25 @@ async function run() {
     app.post("/orders", verifyToken, async (req, res) => {
       const order = req.body;
 
-      const food = await foodsCollection.findOne({ _id: new ObjectId(order.foodId) });
+      const food = await foodsCollection.findOne({
+        _id: new ObjectId(order.foodId),
+      });
       if (!food) return res.status(404).send({ message: "Food not found" });
-      if (food.quantity < order.quantity) {
+
+      const foodQuantity = Number(food.quantity);
+      const orderQuantity = Number(order.quantity);
+
+      if (isNaN(foodQuantity) || isNaN(orderQuantity)) {
+        return res.status(400).send({ message: "Invalid quantity data type" });
+      }
+
+      if (foodQuantity < orderQuantity) {
         return res.status(400).send({ message: "Insufficient stock" });
       }
 
       // Overwrite spoofable fields
-      order.price = food.price;
+      order.price = Number(food.price);
+      order.quantity = orderQuantity;
       order.buyerEmail = req.decoded.email;
       order.date = new Date().toISOString();
 
@@ -147,13 +157,14 @@ async function run() {
           { _id: new ObjectId(order.foodId) },
           {
             $inc: {
-              quantity: -order.quantity,
-              purchaseCount: Number(order.quantity || 0),
+              quantity: -orderQuantity,
+              purchaseCount: orderQuantity,
             },
           }
         );
         res.status(201).send(insertResult);
       } catch (err) {
+        console.error("Order placement error:", err);
         res.status(500).send({ message: "Order placement failed" });
       }
     });
@@ -161,22 +172,31 @@ async function run() {
     // DELETE order & restore quantity
     app.delete("/orders/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
-      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
+      if (!ObjectId.isValid(id))
+        return res.status(400).send({ message: "Invalid ID" });
 
       const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
       if (!order) return res.status(404).send({ message: "Order not found" });
 
-      // Optional: restrict deletion to order owner
       if (order.buyerEmail !== req.decoded.email) {
         return res.status(403).send({ message: "Forbidden" });
       }
 
-      const deleteResult = await ordersCollection.deleteOne({ _id: new ObjectId(id) });
+      const orderQuantity = Number(order.quantity);
+      if (isNaN(orderQuantity)) {
+        return res
+          .status(400)
+          .send({ message: "Invalid stored quantity type" });
+      }
+
+      const deleteResult = await ordersCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
 
       if (deleteResult.deletedCount === 1) {
         await foodsCollection.updateOne(
           { _id: new ObjectId(order.foodId) },
-          { $inc: { quantity: order.quantity } }
+          { $inc: { quantity: orderQuantity } }
         );
         res.send({ message: "Order deleted and stock restored" });
       } else {
