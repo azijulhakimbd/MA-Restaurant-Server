@@ -5,11 +5,12 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const cors = require("cors");
 const admin = require("firebase-admin");
 
-const port = process.env.PORT || 3000;
 
-// middleware
+// Middleware
 app.use(cors());
 app.use(express.json());
+
+
 
 // Firebase Admin SDK Initialization
 const serviceAccount = require("./restaurant-firebase-adminsdk.json");
@@ -18,25 +19,24 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-// JWT Middleware
+// JWT Verification Middleware
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).send({ message: "unauthorized access" });
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "Unauthorized access" });
   }
 
   const token = authHeader.split(" ")[1];
-
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.decoded = decoded;
     next();
-  } catch (error) {
-    return res.status(401).send({ message: "Unauthorized access" });
+  } catch {
+    res.status(401).send({ message: "Unauthorized access" });
   }
 };
 
-// MongoDB Connection
+// MongoDB setup
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -51,32 +51,40 @@ async function run() {
     const foodsCollection = db.collection("foods");
     const ordersCollection = db.collection("orders");
 
-    // ✅ Get All Foods (with optional email query)
+    // GET all foods or by email
     app.get("/foods", async (req, res) => {
-      const email = req.query.email;
-      const query = email ? { addedByEmail: email } : {};
+      const query = req.query.email ? { addedByEmail: req.query.email } : {};
       const result = await foodsCollection.find(query).toArray();
       res.send(result);
     });
 
-    // ✅ Get Single Food by ID
+    // GET single food by ID
     app.get("/foods/:id", async (req, res) => {
       const id = req.params.id;
       const result = await foodsCollection.findOne({ _id: new ObjectId(id) });
       res.send(result);
     });
 
-    // ✅ Add New Food (Private)
+    // POST new food
     app.post("/foods", verifyToken, async (req, res) => {
       const food = req.body;
+      food.quantity = Number(food.quantity || 0);
+      food.purchaseCount = Number(food.purchaseCount || 0);
       const result = await foodsCollection.insertOne(food);
       res.send(result);
     });
 
-    // ✅ Update Food
+    // PUT update food with ownership check
     app.put("/foods/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const updatedData = req.body;
+      const food = await foodsCollection.findOne({ _id: new ObjectId(id) });
+
+      if (!food) return res.status(404).send({ message: "Food not found" });
+      if (food.addedByEmail !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden update access" });
+      }
+
       const result = await foodsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updatedData }
@@ -84,106 +92,109 @@ async function run() {
       res.send(result);
     });
 
-    // ✅ Get Orders for Logged-in User Only (Private)
-    app.get("/orders", verifyToken, async (req, res) => {
-      const email = req.query.email;
-      const decodedEmail = req.decoded.email;
+    // PATCH update quantity (purchase or restock)
+    app.patch("/foods/:id", verifyToken, async (req, res) => {
+      const foodId = req.params.id;
+      const addedQuantity = Number(req.body.addedQuantity);
 
-      if (email !== decodedEmail) {
-        return res.status(403).send({ message: "forbidden access" });
+      if (isNaN(addedQuantity)) {
+        return res.status(400).send({ message: "Invalid quantity" });
       }
 
-      const result = await ordersCollection
-        .find({ buyerEmail: email })
-        .toArray();
+      const food = await foodsCollection.findOne({ _id: new ObjectId(foodId) });
+      if (!food) return res.status(404).send({ message: "Food not found" });
+
+      // Prevent stock going negative
+      if (food.quantity + addedQuantity < 0) {
+        return res.status(400).send({ message: "Insufficient stock" });
+      }
+
+      const result = await foodsCollection.updateOne(
+        { _id: new ObjectId(foodId) },
+        { $inc: { quantity: addedQuantity } }
+      );
       res.send(result);
     });
 
-    // ✅ Place Order
+    // GET orders by logged-in user
+    app.get("/orders", verifyToken, async (req, res) => {
+      const email = req.query.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+      const result = await ordersCollection.find({ buyerEmail: email }).toArray();
+      res.send(result);
+    });
+
+    // POST place order
     app.post("/orders", verifyToken, async (req, res) => {
       const order = req.body;
 
-      try {
-        const result = await ordersCollection.insertOne(order);
+      const food = await foodsCollection.findOne({ _id: new ObjectId(order.foodId) });
+      if (!food) return res.status(404).send({ message: "Food not found" });
+      if (food.quantity < order.quantity) {
+        return res.status(400).send({ message: "Insufficient stock" });
+      }
 
+      // Overwrite spoofable fields
+      order.price = food.price;
+      order.buyerEmail = req.decoded.email;
+      order.date = new Date().toISOString();
+
+      try {
+        const insertResult = await ordersCollection.insertOne(order);
         await foodsCollection.updateOne(
           { _id: new ObjectId(order.foodId) },
-          { $inc: { purchaseCount: order.quantity || 1 } }
+          {
+            $inc: {
+              quantity: -order.quantity,
+              purchaseCount: Number(order.quantity || 0),
+            },
+          }
         );
-
-        res.status(201).send(result);
+        res.status(201).send(insertResult);
       } catch (err) {
-        console.error("Error placing order:", err);
-        res.status(500).send({ error: "Failed to place order" });
+        res.status(500).send({ message: "Order placement failed" });
       }
     });
 
-    // ✅ Update Food Quantity After Restock (using $inc)
-    app.patch("/foods/:id", verifyToken, async (req, res) => {
-      const foodId = req.params.id;
-      const { addedQuantity } = req.body;
-
-      try {
-        const result = await foodsCollection.updateOne(
-          { _id: new ObjectId(foodId) },
-          { $inc: { quantity: addedQuantity } }
-        );
-        res.send(result);
-      } catch (error) {
-        console.error("Error updating quantity:", error);
-        res.status(500).send({ message: "Failed to update quantity." });
-      }
-    });
-
-    // ✅ Delete Order & Restore Quantity
+    // DELETE order & restore quantity
     app.delete("/orders/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ message: "Invalid order ID" });
+      const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+      if (!order) return res.status(404).send({ message: "Order not found" });
+
+      // Optional: restrict deletion to order owner
+      if (order.buyerEmail !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden" });
       }
 
-      try {
-        const order = await ordersCollection.findOne({ _id: new ObjectId(id) });
+      const deleteResult = await ordersCollection.deleteOne({ _id: new ObjectId(id) });
 
-        if (!order) {
-          return res.status(404).send({ message: "Order not found" });
-        }
-
-        const deleteResult = await ordersCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        if (deleteResult.deletedCount === 1) {
-          await foodsCollection.updateOne(
-            { _id: new ObjectId(order.foodId) },
-            { $inc: { quantity: order.quantity } }
-          );
-
-          res.status(200).send({
-            message: "Order deleted and stock updated successfully",
-          });
-        } else {
-          res.status(404).send({ message: "Order not found" });
-        }
-      } catch (error) {
-        console.error("Error deleting order:", error);
-        res.status(500).send({ message: "Internal server error" });
+      if (deleteResult.deletedCount === 1) {
+        await foodsCollection.updateOne(
+          { _id: new ObjectId(order.foodId) },
+          { $inc: { quantity: order.quantity } }
+        );
+        res.send({ message: "Order deleted and stock restored" });
+      } else {
+        res.status(500).send({ message: "Failed to delete order" });
       }
     });
 
-    // ✅ Top 6 Best Selling Foods
+    // GET Top 6 best-selling foods
     app.get("/topFoods", async (req, res) => {
       const topFoods = await foodsCollection
         .find()
         .sort({ purchaseCount: -1 })
         .limit(6)
         .toArray();
-
       res.send(topFoods);
     });
 
-    console.log("✅ Connected to restaurantDB and APIs are ready!");
+    console.log("✅ Connected to restaurantDB and APIs ready!");
   } catch (err) {
     console.error(err);
   }
@@ -191,11 +202,10 @@ async function run() {
 
 run().catch(console.dir);
 
-// Root Endpoint
 app.get("/", (req, res) => {
   res.send("🍽️ Welcome to Restaurant Management System backend");
 });
 
-app.listen(port, () => {
-  console.log(`🚀 Server listening on port ${port}`);
+app.listen(process.env.PORT || 3000, () => {
+  console.log(`🚀 Server listening on port ${process.env.PORT || 3000}`);
 });
