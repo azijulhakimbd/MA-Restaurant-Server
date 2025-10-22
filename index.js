@@ -125,6 +125,63 @@ async function run() {
       res.send(result);
     });
 
+// ✅ ADMIN ANALYTICS ROUTE (Feature 3)
+app.get("/admin/analytics", verifyToken, async (req, res) => {
+  try {
+    const email = req.decoded.email;
+    if (email !== process.env.ADMIN_EMAIL) {
+      return res.status(403).send({ message: "Access denied: Admin only" });
+    }
+
+    //  Total Revenue
+    const totalRevenue = await ordersCollection.aggregate([
+      { $group: { _id: null, total: { $sum: "$price" } } },
+    ]).toArray();
+
+    //  Total Orders
+    const totalOrders = await ordersCollection.countDocuments();
+
+    //  Total Customers
+    const totalCustomers = (await ordersCollection.distinct("buyerEmail")).length;
+
+    //  Top-Selling Foods
+    const topFoods = await ordersCollection.aggregate([
+      {
+        $group: {
+          _id: "$foodId",
+          totalSold: { $sum: "$quantity" },
+          totalRevenue: { $sum: { $multiply: ["$quantity", "$price"] } },
+          name: { $first: "$foodName" },
+        },
+      },
+      { $sort: { totalSold: -1 } },
+      { $limit: 5 },
+    ]).toArray();
+
+    //  Revenue by Date
+    const revenueByDate = await ordersCollection.aggregate([
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: { $toDate: "$date" } } },
+          total: { $sum: "$price" },
+        },
+      },
+      { $sort: { "_id": 1 } },
+    ]).toArray();
+
+    res.send({
+      totalRevenue: totalRevenue[0]?.total || 0,
+      totalOrders,
+      totalCustomers,
+      topFoods,
+      revenueByDate,
+    });
+  } catch (error) {
+    console.error("Analytics error:", error);
+    res.status(500).send({ message: "Error generating analytics data" });
+  }
+});
+
     // POST place order
     app.post("/orders", verifyToken, async (req, res) => {
       const order = req.body;
